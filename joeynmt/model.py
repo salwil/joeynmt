@@ -8,6 +8,7 @@ import numpy as np
 import torch.nn as nn
 from torch import Tensor
 import torch.nn.functional as F
+import torch
 
 from joeynmt.initialization import initialize_model
 from joeynmt.embeddings import Embeddings
@@ -29,9 +30,12 @@ class Model(nn.Module):
                  encoder: Encoder,
                  decoder: Decoder,
                  src_embed: Embeddings,
+                 factor_embed: Embeddings,
+                 factor_type: str,
                  trg_embed: Embeddings,
                  src_vocab: Vocabulary,
-                 trg_vocab: Vocabulary) -> None:
+                 trg_vocab: Vocabulary,
+                 factor_vocab: Vocabulary) -> None:
         """
         Create a new encoder-decoder model
 
@@ -46,17 +50,20 @@ class Model(nn.Module):
 
         self.src_embed = src_embed
         self.trg_embed = trg_embed
+        self.factor_embed = factor_embed
+        self.factor_type = factor_type
         self.encoder = encoder
         self.decoder = decoder
         self.src_vocab = src_vocab
+        self.factor_vocab = factor_vocab
         self.trg_vocab = trg_vocab
         self.bos_index = self.trg_vocab.stoi[BOS_TOKEN]
         self.pad_index = self.trg_vocab.stoi[PAD_TOKEN]
         self.eos_index = self.trg_vocab.stoi[EOS_TOKEN]
 
     # pylint: disable=arguments-differ
-    def forward(self, src: Tensor, trg_input: Tensor, src_mask: Tensor,
-                src_lengths: Tensor, trg_mask: Tensor = None) -> (
+    def forward(self, src: Tensor, factor: Tensor, trg_input: Tensor, src_mask: Tensor,
+                src_lengths: Tensor, factor_lengths: Tensor, trg_mask: Tensor = None) -> (
         Tensor, Tensor, Tensor, Tensor):
         """
         First encodes the source sentence.
@@ -69,9 +76,13 @@ class Model(nn.Module):
         :param trg_mask: target mask
         :return: decoder outputs
         """
+
         encoder_output, encoder_hidden = self.encode(src=src,
+                                                     factor=factor,
                                                      src_length=src_lengths,
+                                                     factor_length=factor_lengths,
                                                      src_mask=src_mask)
+
         unroll_steps = trg_input.size(1)
         return self.decode(encoder_output=encoder_output,
                            encoder_hidden=encoder_hidden,
@@ -79,7 +90,7 @@ class Model(nn.Module):
                            unroll_steps=unroll_steps,
                            trg_mask=trg_mask)
 
-    def encode(self, src: Tensor, src_length: Tensor, src_mask: Tensor) \
+    def encode(self, src: Tensor, factor: Tensor, src_length: Tensor, factor_length: Tensor, src_mask: Tensor) \
         -> (Tensor, Tensor):
         """
         Encodes the source sentence.
@@ -89,7 +100,24 @@ class Model(nn.Module):
         :param src_mask:
         :return: encoder outputs (output, hidden_concat)
         """
-        return self.encoder(self.src_embed(src), src_length, src_mask)
+
+        # Salome
+        if self.factor_vocab:
+            if self.factor_type == "add":
+                #print("src_length: ", src_length)
+                #print("factor_length: ", factor_length)
+                #print("src_embed: ", self.src_embed(src),  "shape", self.src_embed(src).shape)
+                #print("factor_embed: ", self.factor_embed(factor), "shape", self.factor_embed(factor).shape)
+                #if src_length == factor_length:
+                return self.encoder(torch.add(self.src_embed(src),self.factor_embed(factor)), src_length, src_mask)
+                #else:
+                #    raise ConfigurationError(
+                #        "Dimensions of source and factors are not compatible."
+                #    )
+            else:
+                return self.encoder(torch.cat(self.src_embed(src),self.factor_embed(factor),1), src_length+factor_length, src_mask)
+        else:
+            return self.encoder(self.src_embed(src), src_length, src_mask)
 
     def decode(self, encoder_output: Tensor, encoder_hidden: Tensor,
                src_mask: Tensor, trg_input: Tensor,
@@ -127,9 +155,10 @@ class Model(nn.Module):
         :return: batch_loss: sum of losses over non-pad elements in the batch
         """
         # pylint: disable=unused-variable
+
         out, hidden, att_probs, _ = self.forward(
-            src=batch.src, trg_input=batch.trg_input,
-            src_mask=batch.src_mask, src_lengths=batch.src_lengths,
+            src=batch.src, factor = batch.factor, trg_input=batch.trg_input,
+            src_mask=batch.src_mask, src_lengths=batch.src_lengths, factor_lengths=batch.factor_lengths,
             trg_mask=batch.trg_mask)
 
         # compute log probs
@@ -153,7 +182,7 @@ class Model(nn.Module):
             stacked_attention_scores: attention scores for batch
         """
         encoder_output, encoder_hidden = self.encode(
-            batch.src, batch.src_lengths,
+            batch.src, batch.factor, batch.src_lengths, batch.factor_lengths,
             batch.src_mask)
 
         # if maximum output length is not globally specified, adapt to src len
@@ -199,21 +228,38 @@ class Model(nn.Module):
 
 def build_model(cfg: dict = None,
                 src_vocab: Vocabulary = None,
-                trg_vocab: Vocabulary = None) -> Model:
+                trg_vocab: Vocabulary = None,
+                factor_vocab = None) -> Model:
     """
     Build and initialize the model according to the configuration.
 
     :param cfg: dictionary configuration containing model specifications
     :param src_vocab: source vocabulary
     :param trg_vocab: target vocabulary
+    :param factor_vocab: factor vocabulary
     :return: built and initialized model
     """
     src_padding_idx = src_vocab.stoi[PAD_TOKEN]
     trg_padding_idx = trg_vocab.stoi[PAD_TOKEN]
-
+    #Salome
+    factor_padding_idx = factor_vocab.stoi[PAD_TOKEN]
     src_embed = Embeddings(
         **cfg["encoder"]["embeddings"], vocab_size=len(src_vocab),
         padding_idx=src_padding_idx)
+
+    #Salome
+    if factor_vocab and\
+            (cfg["encoder"].get("factor_combine") == "add" or cfg["encoder"].get("factor_combine") == "concatenate"):
+        factor_embed = Embeddings(
+            **cfg["encoder"]["factor_embeddings"], vocab_size=len(factor_vocab),
+            padding_idx=factor_padding_idx)
+        if cfg["encoder"].get("factor_combine") == "add" and \
+                cfg["encoder"]["factor_embeddings"]["embedding_dim"] != cfg["encoder"]["embeddings"]["embedding_dim"]:
+            raise ConfigurationError("Dimensions of source and factors are not compatible.")
+    elif factor_vocab:
+        raise ConfigurationError("No valid combine method for factor embeddings.")
+    else:
+        pass
 
     # this ties source and target embeddings
     # for softmax layer tying, see further below
@@ -258,8 +304,11 @@ def build_model(cfg: dict = None,
             emb_size=trg_embed.embedding_dim, emb_dropout=dec_emb_dropout)
 
     model = Model(encoder=encoder, decoder=decoder,
-                  src_embed=src_embed, trg_embed=trg_embed,
-                  src_vocab=src_vocab, trg_vocab=trg_vocab)
+                  src_embed=src_embed, factor_embed=factor_embed,
+                  factor_type=cfg["encoder"].get("factor_combine"),
+                  trg_embed=trg_embed, src_vocab=src_vocab,
+                  factor_vocab = factor_vocab, trg_vocab=trg_vocab,
+                  )
 
     # tie softmax layer with trg embeddings
     if cfg.get("tied_softmax", False):
@@ -274,6 +323,6 @@ def build_model(cfg: dict = None,
                 "The decoder must be a Transformer.")
 
     # custom initialization of model parameters
-    initialize_model(model, cfg, src_padding_idx, trg_padding_idx)
+    initialize_model(model, cfg, src_padding_idx, trg_padding_idx, factor_padding_idx)
 
     return model
