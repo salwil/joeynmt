@@ -42,6 +42,8 @@ class Model(nn.Module):
         :param encoder: encoder
         :param decoder: decoder
         :param src_embed: source embedding
+        :param factor_embed: factor embedding
+        :param factor_type: how to combine source and factor embeddings
         :param trg_embed: target embedding
         :param src_vocab: source vocabulary
         :param trg_vocab: target vocabulary
@@ -70,9 +72,11 @@ class Model(nn.Module):
         Then produces the target one word at a time.
 
         :param src: source input
+        :param factor: source factor
         :param trg_input: target input
         :param src_mask: source mask
         :param src_lengths: length of source inputs
+        :param factor_lengths: length of source factors
         :param trg_mask: target mask
         :return: decoder outputs
         """
@@ -96,26 +100,22 @@ class Model(nn.Module):
         Encodes the source sentence.
 
         :param src:
+        :param factor:
         :param src_length:
+        :param factor_length:
         :param src_mask:
         :return: encoder outputs (output, hidden_concat)
         """
 
-        # Salome
+        # Salome implements depending on the factor setting in the configuration either adding or concatenating the
+        # source-factor vectors to the source vectors.
         if self.factor_vocab:
             if self.factor_type == "add":
-                #print("src_length: ", src_length)
-                #print("factor_length: ", factor_length)
-                #print("src_embed: ", self.src_embed(src),  "shape", self.src_embed(src).shape)
-                #print("factor_embed: ", self.factor_embed(factor), "shape", self.factor_embed(factor).shape)
-                #if src_length == factor_length:
                 return self.encoder(torch.add(self.src_embed(src),self.factor_embed(factor)), src_length, src_mask)
-                #else:
-                #    raise ConfigurationError(
-                #        "Dimensions of source and factors are not compatible."
-                #    )
             else:
-                return self.encoder(torch.cat(self.src_embed(src),self.factor_embed(factor),1), src_length+factor_length, src_mask)
+                return self.encoder(torch.cat((self.src_embed(src),self.factor_embed(factor)),1),
+                                    src_length,factor_length,
+                                    src_mask)
         else:
             return self.encoder(self.src_embed(src), src_length, src_mask)
 
@@ -241,13 +241,13 @@ def build_model(cfg: dict = None,
     """
     src_padding_idx = src_vocab.stoi[PAD_TOKEN]
     trg_padding_idx = trg_vocab.stoi[PAD_TOKEN]
-    #Salome
     factor_padding_idx = factor_vocab.stoi[PAD_TOKEN]
     src_embed = Embeddings(
         **cfg["encoder"]["embeddings"], vocab_size=len(src_vocab),
         padding_idx=src_padding_idx)
 
-    #Salome
+    # Salome checks if the given combine method and embedding dimensions inside the configuration file are valid / com-
+    # patible. If not a ConfigurationError is raised.
     if factor_vocab and\
             (cfg["encoder"].get("factor_combine") == "add" or cfg["encoder"].get("factor_combine") == "concatenate"):
         factor_embed = Embeddings(
