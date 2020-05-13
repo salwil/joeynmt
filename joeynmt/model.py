@@ -114,7 +114,7 @@ class Model(nn.Module):
                 return self.encoder(torch.add(self.src_embed(src),self.factor_embed(factor)), src_length, src_mask)
             else:
                 return self.encoder(torch.cat((self.src_embed(src),self.factor_embed(factor)),1),
-                                    src_length,factor_length,
+                                    src_length,
                                     src_mask)
         else:
             return self.encoder(self.src_embed(src), src_length, src_mask)
